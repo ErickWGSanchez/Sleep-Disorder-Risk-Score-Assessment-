@@ -1,0 +1,269 @@
+---
+title: "Assessing Risk Factors for Sleep Disorders Through Multivariate Analysis"
+author: "Erick Guevara"
+date: "2024-04-04"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{R, include=FALSE, echo = FALSE}
+library(dplyr)
+library(ggplot2)
+library(Hmisc)
+library(caret)
+library(randomForest)
+library(nnet)
+library(pheatmap)
+library(broom)
+library(cluster)
+```
+
+
+```{R, include=FALSE}
+
+sleep.data <- read.csv("C:/Users/justd/Desktop/project_capstone/Project2/datalake/sleep_health.csv", header=T)
+
+```
+## Introduction 
+
+  Many people develop a certain type of disorder in their life-time which can be attributed to behavioral risk factors that act as a precursor to having insomnia, sleep apnea, etc. This novel analysis is to view the group combinations of behavior risk to score the potential high risk that lead to a certain sleep disorder. The data gathered for insights in this approach involves data from the Center for Disease Control which contains answers to individual survey questions that is related to behavior and lifestyle components. The data has 374 observations with 11 variables that includes gender, age, occupation, sleep duration, sleep quality, physical activity level, stress level, BMI, heart rate, daily steps, and sleep disorder. From these variables, interaction columns are created to measure the value of risk between two variable on how it affects the response. 
+
+## Pre-Processing 
+
+```{R, include=FALSE, echo=FALSE}
+
+sleep.data <- na.omit(sleep.data)
+
+colSums(is.na(sleep.data))
+
+head(sleep.data)
+
+```
+## Feature Building - Creating Risk Severity Indicators
+
+  To start, a few columns and variables need to be created and changed to measure the direct interactions that may affect the type of sleep disorder. The modification of the BMI category from "Normal Weight" to "Normal" helps maintain consistency across data values. Several columns (sleep_disorder, BMI, occupation) are converted to factors, this is needed to quantify categorical variables that will be needed in the model. To first view the data, a couple of numerical plots are created. These plots illustrate the distribution of sleep disorders, BMI, and occupation which are the three variables that are categorical.  
+
+```{R, echo=FALSE}
+sleep.data <- sleep.data %>% 
+  select(-blood_pressure, -id)
+
+sleep.data$BMI[sleep.data$BMI == "Normal Weight"] <- "Normal"
+
+sleep.data <- sleep.data %>% 
+  mutate(sleep_disorder = as.factor(sleep_disorder))
+
+sleep.data <- sleep.data %>% 
+  mutate(BMI = as.factor(BMI))
+
+sleep.data <- sleep.data %>% 
+  mutate(occupation = as.factor(occupation))
+
+ggplot(sleep.data, aes(x = sleep_disorder, fill = sleep_disorder)) +
+  geom_bar() +
+  labs(title = "Distribution of Sleep Disorders", x = "Type of Sleep Disorder", y = "Count")
+
+ggplot(sleep.data, aes(x = BMI, fill = BMI)) +
+  geom_bar() +
+  labs(title = "Distribution of BMI", x = "Type of BMI", y = "Count")
+
+
+ggplot(sleep.data, aes(x = occupation, fill = occupation)) +
+  geom_bar() +
+  labs(title = "Distribution of Occupation", x = "Type of Occupation", y = "Count")
+
+
+```
+
+These distributions are essential to view which multinomial values more significant than others. For distribution of sleep disorders, the none value is more prevalent than other in context of this survey. Normal weight seems to be the mode of this distribution while overweight being close second. Finally, the typical occupations include nurse, doctor, and engineer roles. 
+
+```{R, include=FALSE, echo=FALSE}
+
+#Creating severity level indicators 
+
+sleep.data$risk.duration <- ifelse(sleep.data$duration < 5.0, 1,
+                              ifelse(sleep.data$duration >= 5 & sleep.data$duration < 7, 2,
+                                     ifelse(sleep.data$duration >= 7 , 3, 4)))
+
+sleep.data$risk.BMI <- ifelse(sleep.data$BMI == "Obese", 1,
+                              ifelse(sleep.data$BMI == "Overweight", 2,
+                                     ifelse(sleep.data$BMI == "Normal", 3, 4)))
+
+#Risk Indicators Interactions
+
+attach(sleep.data)
+
+sleep.data$BMI_duration.interaction <- risk.BMI * risk.duration
+sleep.data$sleep.quality_stress <- sleep_quality * stress_level
+
+```
+
+## 10k-fold Cross Validation on Random Forest for Multiclass Classification 
+
+```{R, echo=FALSE}
+
+set.seed(100)
+
+trainIndex <- createDataPartition(sleep.data$sleep_disorder, p=0.8, list = FALSE)
+trainData <- sleep.data[trainIndex, ]
+testData <- sleep.data[-trainIndex, ]
+
+train.ctrl <- trainControl(method = "cv", number = 10)
+
+rf_model <- train(sleep_disorder~., data = trainData, method= "rf", trControl = train.ctrl)
+
+
+print(rf_model)
+
+rf.results <- rf_model$results
+mean.acc <- mean(rf.results$Accuracy)
+sd_acc <- sd(rf.results$Accuracy)
+
+```
+The Random Forest model was trained using the train function from the caret package, which simplifies the process of creating predictive models and their evaluation.A 10-fold cross-validation method was used, which is effective for estimating the model's performance reliably. The results show that the model achieved the highest accuracy of approximately 91.70% when mtry was set to 2. This indicates that using a smaller subset of predictors at each split is preferable in this context, likely because it helps in reducing the model variance without significantly increasing the bias. 
+
+The chosen mtry value of 2, based on the highest accuracy, signifies that the model's random feature selection helped in mitigating over fitting while still capturing the patterns necessary for predicting sleep disorders. Basically, finding the optimal mtry value is needed to achieve a balanced model between accuracy and generalization.
+
+## Random Forest Feature Selction by Grid Search & Model Evaluations 
+
+```{R, echo=FALSE}
+
+
+cat("Mean Accuracy:", mean.acc, "\n")
+cat("Standard Deviation of Accuracy:", sd_acc, "\n")
+
+tune_grid <- expand.grid(.mtry = c(2, 3, 5))
+train_control <- trainControl(method = "cv", number = 10, search = "grid")
+rf.tuned_model <- train(sleep_disorder ~ ., data = trainData, method = "rf", trControl = train_control, tuneGrid = tune_grid)
+print(rf.tuned_model)
+
+#Pre-Tuned Mode
+predictions <- predict(rf_model, newdata = testData)
+confusionMatrix(predictions, testData$sleep_disorder)
+
+#Tuned Model
+predictions <- predict(rf.tuned_model, newdata = testData)
+confusionMatrix(predictions, testData$sleep_disorder)
+
+rf.importance.vals <- varImp(rf.tuned_model, scale = TRUE)
+rf.importance.vals
+
+```
+For the multinomial logistic regression, I needed to extract the most important features from the random forest model. I introduced a grid search for random forest to optimally select the best variables to predict the potential risk from a group of behavioral risk factors. Based on the summary of results, The model achieved an accuracy of approximately 89.04%, which is quite high. This metric indicates the proportion of total correct predictions out of all predictions made. The confidence interval (95% CI: 0.7954, 0.9515) suggests that the accuracy is consistently high across different samplings of the data, showing model stability.
+
+The Cohen's Kappa value is 0.8073, which is very good. Kappa is a measure of how much better the classifier is performing over the performance of a classifier that simply guesses at random according to the frequency of each class. The no information rate is 0.589, indicating that if one always predicted the most frequent class, they would be correct about 58.9% of the time.
+
+High sensitivity for 'Insomnia' (93.33%) and 'None' (93.02%), but slightly lower for 'Sleep Apnea' (73.33%). This indicates the model's effectiveness in identifying true positive cases for each disorder, with a need for improvement in detecting 'Sleep Apnea'.
+Excellent specificity across all classes, with the highest being for 'Sleep Apnea' (98.28%).The prevalence reflects how common each class is in the dataset. Most of the data points belong to the 'None' category (58.90%), which could influence the model's learning and predictive behavior. The Random Forest model performs exceptionally well in predicting whether a person has 'Insomnia', 'None', or 'Sleep Apnea', with robust statistical support for its predictions.
+
+## Multinomial Logistic Regression 
+
+```{R, echo=FALSE}
+multinom_model <- multinom(sleep_disorder ~ ., data = trainData, maxit = 200)
+summary(multinom_model)
+
+predictions <- predict(multinom_model, newdata = testData, type = "class")
+probabilities <- predict(multinom_model, newdata = testData, type = "probs")
+
+# Creating a confusion matrix to see the accuracy
+conf_matrix <- table(Predicted = predictions, Actual = testData$sleep_disorder)
+print(conf_matrix)
+```
+
+The results shown above is from conducting a multinomial logistic regression analysis. Each coefficients here represents the change in the log odds of being in a particular category of sleep disorder for a one-unit change in the predictor, holding all other predictors constant. The model includes various occupation dummies (Doctor, Engineer, Salesperson, etc.). The coefficients for these variables show how the likelihood of each sleep disorder changes for individuals in these occupations compared to the baseline occupation. BMI_duration_interaction, which captures how the combined effect of BMI and the duration of the condition influences the likelihood of a sleep disorder. A significant coefficient here suggests that the impact of BMI on sleep disorder likelihood changes with the duration. 
+
+Listed below the coefficients, these provide a measure of the statistical significance and the precision of the coefficient estimates, respectively. A small p-value (typically <0.05) indicates that the effect is statistically significant, meaning there is a strong likelihood that the effect observed is not due to random chance.
+
+## Multinomial Logistic Regression Model Evalulation 
+
+```{R, echo=FALSE}
+
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+print(paste("Accuracy: ", accuracy))
+
+# Advanced metrics using caret
+confmat <- confusionMatrix(as.factor(predictions), as.factor(testData$sleep_disorder))
+confmat
+```
+To measure the accuracy of the model, the confusion matrix shows the number of correct and incorrect predictions for each class. The model has done well in predicting 'None' and 'Sleep Apnea' but shows some confusion between 'Insomnia' and 'None'. Correct predictions for 'None' are particularly high, which could be influenced by its higher prevalence in the dataset (No Information Rate of 0.589). The overall accuracy of 0.8767 is quite good, indicating that the model correctly predicts the sleep disorder status in about 87.67% of the cases. The 95% confidence interval for accuracy (0.7788, 0.942) suggests that the model's accuracy is consistently high across different samples. A kappa value of 0.7852 shows substantial agreement beyond chance, confirming that the model is effective at distinguishing between the different classes of sleep disorders. The extremely low p-value (7.828e-08) statistically confirms that the model performs significantly better than a naive model that would always predict the most frequent class.
+ 
+## Clustering Analysis
+
+Normalizing the Clustering algorithms such as k-means are sensitive to the scale of the data, so it's crucial to standardize or normalize the data so that each feature contributes equally to the distance computations. Using Elbow Method the plot of within-cluster sum of squares (WCSS) against the number of clusters to find the "elbow" point where the WCSS starts to level off. The Silhouette Method evaluates the quality of clustering by assessing how close each point in one cluster is to points in the neighboring clusters.
+
+```{R, echo=FALSE}
+data_scaled <- scale(trainData[, !names(trainData) %in% c("gender","occupation", "BMI", "sleep_disorder")])
+
+#Choosing number of clusters
+set.seed(111)
+wcss <- sapply(1:10, function(k){
+  kmeans(data_scaled, centers = k, nstart = 25)$tot.withinss
+})
+plot(1:10, wcss, type = "b", pch = 19, frame = FALSE, xlab = "Number of clusters K", ylab = "Total within-clusters sum of squares")
+
+#K means clustering 
+
+set.seed(111)
+k <- 4  # assuming 4 is chosen based on the methods above
+kmeans_result <- kmeans(data_scaled, centers = k, nstart = 25)
+trainData$cluster <- kmeans_result$cluster
+
+
+cluster_summary <- trainData %>%
+  group_by(cluster) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE))
+
+categorical_summary <- trainData %>%
+  group_by(cluster) %>%
+  summarise(across(where(is.factor), ~{
+    names(which.max(table(.)))
+  }))
+
+full_cluster_summary <- left_join(cluster_summary, categorical_summary, by = "cluster")
+
+
+pca_result <- prcomp(data_scaled)
+data_pca <- data.frame(pca_result$x, cluster = kmeans_result$cluster)
+
+centroids <- aggregate(cbind(PC1, PC2) ~ cluster, data = data_pca, mean)
+
+
+
+```
+
+## Results
+```{R,echo=FALSE}
+#Random Forest Model Tuned for Feature Selection on Important Variables 
+plot(rf.importance.vals, main="Variable Importance")
+
+#Multinomial Logistic Regression Coefficients of Predictors
+
+#tidying the model
+tidy.model <- tidy(multinom_model)
+
+
+ggplot(tidy.model, aes(x = term, y = estimate, fill = factor(y.level))) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  coord_flip() +
+  labs(title = "Coefficient Impact by Sleep Disorder Type", y = "Coefficient Estimate", x = "Predictors") +
+  theme_minimal()
+
+
+#Clusters
+ggplot(data_pca, aes(PC1, PC2, color = as.factor(cluster))) +
+  geom_point(alpha = 0.5) +
+  geom_label(data = centroids, aes(label = cluster, x = PC1, y=PC2), inherit.aes = FALSE, fill = "white") +
+  labs(title = "PCA Plot of Data Clusters",
+       subtitle = "Based on scaled behavioral and lifestyle data",
+       x = "Principal Component 1",
+       y = "Principal Component 2",
+       color = "Cluster ID") +
+  theme_minimal()
+```
+
+
+
